@@ -72,3 +72,11 @@ VisualizationAgent
     Mandato: `docker compose up -d`
     Puede comprobarse que esté en funcionamiento desde `http://localhost:8000/`
 2. Ejecutar los agentes JADE *posiblemente toque añadir aquí la configuracion de como hacerlo*
+
+
+## Declaración de uso de IA
+Se usó IA generativa para buscar y entender y usar librerías java como:
+
+- Gson (usada para convertir objetos Java a formato JSON antes de enviarlos a la API Python, y para convertir la respuesta JSON de la API en objetos Java manejables dentro del agente.)
+    
+- java.net (usada para construir y enviar peticiones HTTP desde el agente `SentimentAgent` hacia la API de FastAPI, incluyendo la configuración de la URL, el método `POST`, las cabeceras HTTP y el cuerpo de la petición.)
