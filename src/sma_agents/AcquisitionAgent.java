@@ -4,6 +4,7 @@ import jade.core.Agent;
 import jade.core.AID;
 import jade.core.behaviours.*;
 import jade.lang.acl.ACLMessage;
+import jade.lang.acl.MessageTemplate;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets; //
@@ -24,7 +25,7 @@ public class AcquisitionAgent extends Agent{
 
     /** método para realizar envio a sentiment **/
     private void sendCommentToSentimentAgent(String postId, String commentId, String text){
-        ACLMessage message = new ACLMessage(ACLMessage.INFORM);
+        ACLMessage message = new ACLMessage(ACLMessage.REQUEST);
 
         message.addReceiver(new AID(sentimentAgentName,AID.ISLOCALNAME)); //
         message.setConversationId("new-comment"); //el tipo de mensaje que envía para que pueda filtrar
@@ -46,8 +47,8 @@ public class AcquisitionAgent extends Agent{
 
             // y por cada una la normalizamos en minusculas y sin espacios, si está vacia o es la primera continuamos
             for(String line : lines){
-                line = line.trim().toLowerCase();
-                if (line.isEmpty() || line.startsWith("postid;")) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("postId;")) {
                     continue;
                 }
 
@@ -78,7 +79,49 @@ public class AcquisitionAgent extends Agent{
         }
     }
 
+    /** método para manejar errores recibidos desde sentimentAgent **/
+    private void handleSentimentError(ACLMessage message) {
+        String content = message.getContent();
 
+        if (content == null || content.isBlank()) {
+            System.out.println("[" + getLocalName() + "] Error recibido sin contenido");
+            return;
+        }
+
+        /*
+         * Formato esperado:
+         * ERROR;postId;commentId;motivo
+         */
+        String[] parts = content.split(";", 4);
+
+        if (parts.length < 4) {
+            System.out.println("[" + getLocalName() + "] Mensaje de error con formato inválido:");
+            System.out.println("    " + content);
+            return;
+        }
+
+        String type = parts[0].trim();
+        String postId = parts[1].trim();
+        String commentId = parts[2].trim();
+        String reason = parts[3].trim();
+
+        if (!type.equalsIgnoreCase("ERROR")) {
+            System.out.println("[" + getLocalName() + "] INFORM recibido, pero no es un error:");
+            System.out.println("    " + content);
+            return;
+        }
+
+        String uniqueCommentId = postId + "_" + commentId;
+
+        processedComments.remove(uniqueCommentId);
+
+        System.out.println("[" + getLocalName() + "] Error recibido desde " + message.getSender().getLocalName());
+        System.out.println("    Publicacion: " + postId);
+        System.out.println("    Comentario: " + commentId);
+        System.out.println("    Motivo: " + reason);
+        System.out.println("    Comentario eliminado de procesados. Se reintentará en el próximo ciclo.");
+        System.out.println("\n");
+    }
 
     /*********************************** Behaviours ***********************************/
 
@@ -89,8 +132,23 @@ public class AcquisitionAgent extends Agent{
             checkNewComments();
         }
     };
+    CyclicBehaviour errorBehaviour = new CyclicBehaviour(this) {
+        @Override
+        public void action() {
+            MessageTemplate template = MessageTemplate.and(
+                    MessageTemplate.MatchPerformative(ACLMessage.INFORM),
+                    MessageTemplate.MatchConversationId("sentiment-error")
+            );
 
+            ACLMessage message = receive(template);
 
+            if (message != null) {
+                handleSentimentError(message);
+            } else {
+                block();
+            }
+        }
+    };
 
     /*********************************** setup ***********************************/
 
@@ -107,7 +165,7 @@ public class AcquisitionAgent extends Agent{
         System.out.println("\n");
 
         addBehaviour(checkBehaviour);
-
+        addBehaviour(errorBehaviour);
 
     }
 }

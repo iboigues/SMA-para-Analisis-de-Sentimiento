@@ -33,7 +33,7 @@ SentimentAgent
         |
         | HTTP POST
         v
-FastAPI Sentiment API
+FastAPI Sentiment API (robertuito)
         |
         | JSON { tipo, score }
         v
@@ -47,7 +47,7 @@ VisualizationAgent
 ## Componentes principales
 -   AcquisitionAgent: agente encargado de obtener o generar comentarios.
 -   SentimentAgent: agente encargado de recibir comentarios y solicitar su clasificación a la API Python.
--   Sentiment API: servicio FastAPI que utiliza un modelo de Hugging Face para clasificar sentimiento.
+-   Sentiment API: servicio FastAPI que utiliza el modelo 'robertuito' (https://github.com/pysentimiento/pysentimiento) para clasificar sentimiento de texto en español.
 -   VisualizationAgent: agente encargado de mostrar o procesar los resultados obtenidos.
 
 ---

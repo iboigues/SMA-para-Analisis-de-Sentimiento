@@ -1,28 +1,34 @@
 package sma_agents;
 
+import jade.core.AID;
 import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.lang.acl.ACLMessage;
 
 import com.google.gson.Gson;
+import jade.lang.acl.MessageTemplate;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-
-
-
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 
 public class SentimentAgent extends Agent {
-/********************* Variables globales **********************/
+    /******* Variables globales ********/
+    private static final String NEW_COMMENT_CONVERSATION_ID = "new-comment";    //mensajes que vienen del Acquisition Agent
+    private static final String RESULT_CONVERSATION_ID = "sentiment-result";    //mensajes que se envian al Visualization Agent
+
     private String visualizationAgentName = "visualizer";
     private final String sentimentApiUrl = "http://localhost:8000/classifier/classify";
     private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+
     private final Gson gson = new Gson();
 
-    /********************* clases necesarias para las peticiones http **********************/
+    /******* clases necesarias para las peticiones http ********/
 
     class ClassifierInput {
         String text;
@@ -37,15 +43,29 @@ public class SentimentAgent extends Agent {
         double score;
     }
 
+    class SentimentResult {
+        String postId;
+        String commentId;
+        String text;
+        String sentiment;
+        double score;
+        String timestamp;
 
+        SentimentResult(String postId, String commentId, String text, String sentiment, double score) {
+            this.postId = postId;
+            this.commentId = commentId;
+            this.text = text;
+            this.sentiment = sentiment;
+            this.score = score;
+            this.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
+        }
+    }
 
-    /********************* Aux **********************/
+    /******* Aux ********/
 
-    /**metodo para clasificar los comentarios**/
+    /*metodo para clasificar los comentarios*/
 
-    private String classifySentiment(String text){
-        String sentiment = "";
-        double score = 0;
+    private ClassifierOutput classifySentiment(String text){
         try {
             // creacion del json classifierinput
             ClassifierInput input = new ClassifierInput(text);
@@ -66,33 +86,47 @@ public class SentimentAgent extends Agent {
                 System.out.println("[" + getLocalName() + "] Error API sentiment: "
                         + response.statusCode() + " - " + response.body());
 
-                return "ERROR API";
+                ClassifierOutput errorOutput = new ClassifierOutput();
+                errorOutput.tipo = "ERROR_API";
+                errorOutput.score = 0.0;
+                return errorOutput;
             }
+
             //convertir
             ClassifierOutput output = gson.fromJson(response.body(), ClassifierOutput.class);
-            sentiment = output.tipo;
-            score = output.score;
-            System.out.println("[" + getLocalName() + "] sentiment: "+sentiment+"\tscore: "+score);
+            System.out.println("[" + getLocalName() + "] sentiment: "+output.tipo+"\tscore: "+output.score);
 
-            return sentiment;
+            return output;
 
         } catch (Exception e) {
             System.out.println("[" + getLocalName() + "] Error llamando a sentiment API: " + e.getMessage());
-            return "ERROR";
+
+            ClassifierOutput errorOutput = new ClassifierOutput();
+            errorOutput.tipo = "ERROR";
+            errorOutput.score = 0.0;
+
+            return errorOutput;
         }
     }
-    /**metodo para enviar los comentarios y sentimientos a visualización**/
+    /*metodo para enviar los comentarios y sentimientos a visualización*/
 
     private void sendResultToVisualizationAgent(String postId, String commentId,
-                                                String text, String sentiment){
+                                                String text, String sentiment, double score){
+        SentimentResult result = new SentimentResult(postId, commentId, text, sentiment, score);
 
-        //POR IMPLEMENTAR
-        String message = postId + "; " + commentId + "; " + text + " --> " + sentiment;
-        System.out.println("WARNING: No implementado el envío a visualizerAgent.\n");
+        ACLMessage message = new ACLMessage(ACLMessage.INFORM);
+        message.addReceiver(new AID(visualizationAgentName, AID.ISLOCALNAME));
+        //marcamos el tipo de mensaje como "sentiment-result"
+        message.setConversationId(RESULT_CONVERSATION_ID);
+        message.setContent(gson.toJson(result));
+
+        send(message);
+
+        System.out.println("[" + getLocalName() + "] Resultado enviado a " + visualizationAgentName);
     }
 
 
-    /**metodo para procesar los comentarios**/
+    /*metodo para procesar los comentarios*/
 
     private void processCommentMessage(ACLMessage message){
         // separamos el contenido del mensaje como el csv
@@ -100,20 +134,25 @@ public class SentimentAgent extends Agent {
         System.out.println("[" + getLocalName() + "] Comentario recibido: " + content);
 
         String[] parts = content.split(";", 3);
+        if (parts.length < 3) {
+            System.err.println("[" + getLocalName() + "] Mensaje mal formado: " + content);
+            return;
+        }
         String postId = parts[0].trim();
         String commentId = parts[1].trim();
         String text = parts[2].trim();
 
         // enviamos el texto a clasificar
-        String sentiment = classifySentiment(text);
+        ClassifierOutput output = classifySentiment(text);
 
         System.out.println("[" + getLocalName() + "] Resultado:");
         System.out.println("    Publicacion: " + postId);
         System.out.println("    Comentario: " + commentId);
-        System.out.println("    Sentimiento: " + sentiment);
+        System.out.println("    Sentimiento: " + output.tipo);
+        System.out.println("    Score: " + output.score);
 
         //lo enviamos al visualizador
-        sendResultToVisualizationAgent(postId, commentId, text, sentiment);
+        sendResultToVisualizationAgent(postId, commentId, text, output.tipo, output.score);
     }
 
 
@@ -124,16 +163,24 @@ public class SentimentAgent extends Agent {
     protected void setup() {
         Object[] args = getArguments();
 
-        visualizationAgentName = args[0].toString();
+        if (args != null && args.length > 0 && args[0] != null) {
+            visualizationAgentName = args[0].toString();
+        }
+
         System.out.println("[" + getLocalName() + "] SentimentAgent iniciado");
-        System.out.println("[" + getLocalName() + "] Enviara resultados a: " + visualizationAgentName);
+        System.out.println("[" + getLocalName() + "] Enviará resultados a: " + visualizationAgentName);
+
+        MessageTemplate newCommentTemplate = MessageTemplate.and(
+                MessageTemplate.MatchPerformative(ACLMessage.REQUEST),
+                MessageTemplate.MatchConversationId(NEW_COMMENT_CONVERSATION_ID)
+        );
 
         addBehaviour(new CyclicBehaviour(this) {
             @Override
             public void action() {
-                ACLMessage message = receive();
+                ACLMessage message = receive(newCommentTemplate);
 
-                if (message != null) {
+                if (message != null && message.getPerformative()==ACLMessage.REQUEST) {
                     processCommentMessage(message);
                 } else {
                     block();
