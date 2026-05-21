@@ -3,7 +3,14 @@ package sma_agents;
 import jade.core.AID;
 import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
+import jade.domain.DFService;
+import jade.domain.FIPAAgentManagement.DFAgentDescription;
+import jade.domain.FIPAAgentManagement.ServiceDescription;
+import jade.domain.FIPAException;
 import jade.lang.acl.ACLMessage;
+import jade.wrapper.AgentController;
+import jade.wrapper.ContainerController;
+import jade.wrapper.StaleProxyException;
 
 import com.google.gson.Gson;
 import jade.lang.acl.MessageTemplate;
@@ -21,8 +28,8 @@ public class SentimentAgent extends Agent {
     /******* Variables globales ********/
     private static final String NEW_COMMENT_CONVERSATION_ID = "new-comment";    //mensajes que vienen del Acquisition Agent
     private static final String RESULT_CONVERSATION_ID = "sentiment-result";    //mensajes que se envian al Visualization Agent
+    private static final String ERROR_CONVERSATION_ID = "sentiment-error";
 
-    private String visualizationAgentName = "visualizer";
     private final String sentimentApiUrl = "http://localhost:8000/classifier/classify";
     private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
@@ -41,6 +48,7 @@ public class SentimentAgent extends Agent {
     class ClassifierOutput {
         String tipo;
         double score;
+        String errorMessage;
     }
 
     class SentimentResult {
@@ -60,8 +68,54 @@ public class SentimentAgent extends Agent {
             this.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
         }
     }
+    private String servicio = "sentiment process"; //servicio que proporciona el agente
 
-    /******* Aux ********/
+    /*********************************** DF register ***********************************/
+
+    private void registerAgent(String servicio){
+        //descripcion del agente y su nombre (descriptor de servicios)
+        DFAgentDescription dfd = new DFAgentDescription();
+        dfd.setName(this.getAID());
+        //el servicio que proporciona y su tipo para localizarlos por el
+        ServiceDescription sd = new ServiceDescription();
+        sd.setName(servicio);
+        sd.setType(servicio);
+        //añadimos al descriptor de servicios
+        dfd.addServices(sd);
+        //realizamos el registro del descriptor de servicios en el DF
+        try{
+            DFService.register(this,dfd);
+            System.out.println("El Agente :" + getLocalName()+ " fue registrado en el DF");
+
+        }
+        catch(FIPAException ex)
+        {
+            System.err.println("El Agente :" + getLocalName()+ " no ha podido registrar el servicio " + ex.getMessage());
+            doDelete();
+        }
+    }
+
+    /*********************************** levantamiento de visualization agent si no hay ***********************************/
+
+    private void levantarVisualizationAgent() {
+        try {
+            ContainerController container = getContainerController();
+
+            AgentController sentiment = container.createNewAgent(
+                    "visualization-agent",
+                    "sma_agents.VisualizationAgent",
+                    new Object[]{}
+            );
+
+            sentiment.start();
+
+            System.out.println("[" + getLocalName() + "] VisualizationAgent levantado dinámicamente");
+
+        } catch (StaleProxyException e) {
+            System.err.println("[" + getLocalName() + "] No se pudo levantar VisualizationAgent: " + e.getMessage());
+        }
+    }
+    /*********************************** Aux ***********************************/
 
     /*metodo para clasificar los comentarios*/
 
@@ -82,68 +136,126 @@ public class SentimentAgent extends Agent {
             //envio de peticion request, el body de entrada es un string
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
+            // si error de la api envia un mensaje inform al acquisition
             if (response.statusCode() != 200) {
-                System.out.println("[" + getLocalName() + "] Error API sentiment: "
-                        + response.statusCode() + " - " + response.body());
+                String error = "Error API sentiment: " + response.statusCode() + " - " + response.body();
+
+                System.out.println("[" + getLocalName() + "] " + error);
 
                 ClassifierOutput errorOutput = new ClassifierOutput();
                 errorOutput.tipo = "ERROR_API";
                 errorOutput.score = 0.0;
+                errorOutput.errorMessage = error;
+
                 return errorOutput;
             }
 
             //convertir
             ClassifierOutput output = gson.fromJson(response.body(), ClassifierOutput.class);
-            System.out.println("[" + getLocalName() + "] sentiment: "+output.tipo+"\tscore: "+output.score);
-
             return output;
 
         } catch (Exception e) {
-            System.out.println("[" + getLocalName() + "] Error llamando a sentiment API: " + e.getMessage());
+            String error = "Error llamando a sentiment API: " + e.getMessage();
+
+            System.out.println("[" + getLocalName() + "] " + error);
 
             ClassifierOutput errorOutput = new ClassifierOutput();
             errorOutput.tipo = "ERROR";
             errorOutput.score = 0.0;
+            errorOutput.errorMessage = error;
 
             return errorOutput;
         }
     }
-    /*metodo para enviar los comentarios y sentimientos a visualización*/
+    /** método para buscar agentes de visualización **/
+    private AID buscaServicioVisualization() {
+        DFAgentDescription template = new DFAgentDescription();
+        String servicioVisualization = "visualization-agent";
+//Creamos un descriptor de servicios
+        ServiceDescription sd= new ServiceDescription();
+        sd.setType(servicioVisualization); // mismo type con el que se registra los agentes d evisualizacion
+        template.addServices(sd);
+        try{
+//Consultamos al DF los servicios y los devuelve en el dfd
+            DFAgentDescription[] result = DFService.search(this,template);
+            if (result.length == 0) {
+                System.out.println("[" + getLocalName() + "] No se encontró ningún agente con servicio de visualización");
+                levantarVisualizationAgent();
+                doWait(3000);
+                return buscaServicioVisualization();
+            }
+
+            AID sentimentAID = result[0].getName();
+            return sentimentAID;
+
+        } catch (FIPAException ex) {
+            System.err.println("[" + getLocalName() + "] Error buscando agente de sentimiento en el DF: " + ex.getMessage());
+            return null;
+        }
+    }
+    /** método para enviar los comentarios y sentimientos a visualización **/
 
     private void sendResultToVisualizationAgent(String postId, String commentId,
                                                 String text, String sentiment, double score){
         SentimentResult result = new SentimentResult(postId, commentId, text, sentiment, score);
 
+        AID visualizeragent = buscaServicioVisualization();
+
         ACLMessage message = new ACLMessage(ACLMessage.INFORM);
-        message.addReceiver(new AID(visualizationAgentName, AID.ISLOCALNAME));
+        message.addReceiver(visualizeragent);
         //marcamos el tipo de mensaje como "sentiment-result"
         message.setConversationId(RESULT_CONVERSATION_ID);
         message.setContent(gson.toJson(result));
 
         send(message);
 
-        System.out.println("[" + getLocalName() + "] Resultado enviado a " + visualizationAgentName);
+        System.out.println("[" + getLocalName() + "] Resultado enviado a " + visualizeragent.getName());
     }
 
 
-    /*metodo para procesar los comentarios*/
-
-    private void processCommentMessage(ACLMessage message){
-        // separamos el contenido del mensaje como el csv
+    /** método para procesar los comentarios **/
+    private void processCommentMessage(ACLMessage message) {
         String content = message.getContent();
         System.out.println("[" + getLocalName() + "] Comentario recibido: " + content);
 
         String[] parts = content.split(";", 3);
+
         if (parts.length < 3) {
-            System.err.println("[" + getLocalName() + "] Mensaje mal formado: " + content);
+            String error = "Mensaje mal formado: " + content;
+
+            System.err.println("[" + getLocalName() + "] " + error);
+
+            String postId = parts.length > 0 ? parts[0].trim() : "UNKNOWN_POST";
+            String commentId = parts.length > 1 ? parts[1].trim() : "UNKNOWN_COMMENT";
+
+            sendErrorToAcquisitionAgent(message, postId, commentId, error);
             return;
         }
+
         String postId = parts[0].trim();
         String commentId = parts[1].trim();
         String text = parts[2].trim();
 
-        // enviamos el texto a clasificar
         ClassifierOutput output = classifySentiment(text);
+
+        if (output == null) {
+            sendErrorToAcquisitionAgent(
+                    message,
+                    postId,
+                    commentId,
+                    "La API devolvió una respuesta nula"
+            );
+            return;
+        }
+
+        if (output.tipo == null || output.tipo.startsWith("ERROR")) {
+            String error = output.errorMessage != null
+                    ? output.errorMessage
+                    : "Error desconocido clasificando el comentario";
+
+            sendErrorToAcquisitionAgent(message, postId, commentId, error);
+            return;
+        }
 
         System.out.println("[" + getLocalName() + "] Resultado:");
         System.out.println("    Publicacion: " + postId);
@@ -151,24 +263,39 @@ public class SentimentAgent extends Agent {
         System.out.println("    Sentimiento: " + output.tipo);
         System.out.println("    Score: " + output.score);
 
-        //lo enviamos al visualizador
         sendResultToVisualizationAgent(postId, commentId, text, output.tipo, output.score);
     }
 
+    /** método para enviar errores al AcquisitionAgent **/
+    private void sendErrorToAcquisitionAgent(ACLMessage originalMessage,
+                                             String postId,
+                                             String commentId,
+                                             String error) {
+
+        ACLMessage reply = originalMessage.createReply();
+
+        reply.setPerformative(ACLMessage.INFORM);
+        reply.setConversationId(ERROR_CONVERSATION_ID);
+        reply.setContent("ERROR;" + postId + ";" + commentId + ";" + error);
+
+        send(reply);
+
+        System.out.println("[" + getLocalName() + "] Error enviado al AcquisitionAgent");
+        System.out.println("    Publicacion: " + postId);
+        System.out.println("    Comentario: " + commentId);
+        System.out.println("    Error: " + error);
+        System.out.println("\n");
+    }
 
 
 
 
     @Override
     protected void setup() {
-        Object[] args = getArguments();
-
-        if (args != null && args.length > 0 && args[0] != null) {
-            visualizationAgentName = args[0].toString();
-        }
 
         System.out.println("[" + getLocalName() + "] SentimentAgent iniciado");
-        System.out.println("[" + getLocalName() + "] Enviará resultados a: " + visualizationAgentName);
+
+        registerAgent(servicio);
 
         MessageTemplate newCommentTemplate = MessageTemplate.and(
                 MessageTemplate.MatchPerformative(ACLMessage.REQUEST),

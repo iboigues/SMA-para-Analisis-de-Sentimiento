@@ -32,7 +32,7 @@ import java.time.format.DateTimeFormatter;
  */
 public class VisualizationAgent extends Agent {
     /********************* Variables globales **********************/
-    public static final String SERVICE_TYPE = "sentiment-visualization";
+    public static final String SERVICE_TYPE = "visualization-agent";
     public static final String SERVICE_NAME = "visualization-agent";
     public static final String CONVERSATION_ID = "sentiment-result";
 
