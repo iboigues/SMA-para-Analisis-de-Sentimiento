@@ -280,11 +280,12 @@ public class SentimentAgent extends Agent {
     private void levantarSentimentApi() {
         try {
             ProcessBuilder pb = new ProcessBuilder(
-                "cmd.exe",
-                "/c",
-                "docker compose up -d sentiment-api"
+                "docker",
+                "compose",
+                "up",
+                "-d",
+                "sentiment-api"
             );
-
             // Ruta raíz del proyecto, donde está el docker-compose.yml
             pb.directory(java.nio.file.Path.of("").toAbsolutePath().toFile());
 
@@ -370,9 +371,10 @@ public class SentimentAgent extends Agent {
         if (apiUp) {
             try {
                 ProcessBuilder pb = new ProcessBuilder(
-                    "cmd.exe",
-                    "/c",
-                    "docker compose down sentiment-api"
+                    "docker",
+                    "compose",
+                    "stop",
+                    "sentiment-api"
                 );
 
                 pb.directory(java.nio.file.Path.of("").toAbsolutePath().toFile());
