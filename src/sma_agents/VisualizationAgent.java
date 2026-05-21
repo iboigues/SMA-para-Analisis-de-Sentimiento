@@ -1,6 +1,5 @@
 package sma_agents;
 
-
 import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.domain.DFService;
@@ -18,6 +17,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JPanel;
+import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 import javax.swing.WindowConstants;
 import javax.swing.table.DefaultTableModel;
@@ -26,6 +26,8 @@ import java.awt.BorderLayout;
 import java.awt.GridLayout;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Agente de visualizacion del SMA.
@@ -39,7 +41,12 @@ public class VisualizationAgent extends Agent {
     private final Gson gson = new Gson();
 
     private JFrame frame;
-    private DefaultTableModel tableModel;
+
+    // Paneles y pestañas principales
+    private JTabbedPane mainTabbedPane;
+    private JTabbedPane detailsTabbedPane; // Contenedor de pestañas secundarias por Post
+
+    private DefaultTableModel postSummaryTableModel;
     private JTextArea logArea;
     private JLabel totalLabel;
     private JLabel posLabel;
@@ -53,7 +60,10 @@ public class VisualizationAgent extends Agent {
     private int neu = 0;
     private int error = 0;
 
-    /********************* clases necesarias para los mensajes **********************/
+    // Mapa para gestionar la lógica de negocio y las tablas de cada Post
+    private final Map<String, PostContainer> postMap = new HashMap<>();
+
+    /********************* Estructuras auxiliares **********************/
     public static class SentimentResult {
         String postId;
         String commentId;
@@ -63,23 +73,35 @@ public class VisualizationAgent extends Agent {
         String timestamp;
     }
 
-/********************* Aux **********************/
+    // Estructura para almacenar los contadores y el modelo de tabla de CADA post
+    private static class PostContainer {
+        String postId;
+        int totalComments = 0;
+        int posCount = 0;
+        int negCount = 0;
+        int neuCount = 0;
+        int rowIndex = -1; // Fila en la tabla de resumen general
 
-    /**metodo para crear la interfaz grafica**/
+        DefaultTableModel detailTableModel; // Tabla exclusiva de este Post
+
+        PostContainer(String postId) {
+            this.postId = postId;
+        }
+    }
+
+    /********************* Interfaz Gráfica **********************/
+
     private void createUi(){
-
         SwingUtilities.invokeLater(new Runnable() {
             @Override
             public void run() {
-
-                frame = new JFrame("SMA - Analisis de sentimiento");
+                frame = new JFrame("SMA - Analisis de Sentimiento por Post");
                 frame.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
                 frame.setLayout(new BorderLayout());
 
-                // panel de contadores
+                // 1. Contadores Globales
                 JPanel countersPanel = new JPanel(new GridLayout(1, 5));
-
-                totalLabel = new JLabel("Total: 0");
+                totalLabel = new JLabel("Total Global: 0");
                 posLabel = new JLabel("POS: 0");
                 negLabel = new JLabel("NEG: 0");
                 neuLabel = new JLabel("NEU: 0");
@@ -90,82 +112,75 @@ public class VisualizationAgent extends Agent {
                 countersPanel.add(negLabel);
                 countersPanel.add(neuLabel);
                 countersPanel.add(errorLabel);
+                frame.add(countersPanel, BorderLayout.NORTH);
 
-                // tabla principal
-                tableModel = new DefaultTableModel(
-                        new Object[]{"Hora", "Post", "Comentario", "Sentimiento", "Score", "Texto"},
-                        0
+                // 2. Contenedor Principal de Pestañas
+                mainTabbedPane = new JTabbedPane();
+
+                // --- PESTAÑA 1: RESUMEN GENERAL ---
+                postSummaryTableModel = new DefaultTableModel(
+                    new Object[]{"ID del Post", "Total Comentarios", "Positivos (POS)", "Negativos (NEG)", "Neutros (NEU)"},
+                    0
                 ) {
                     @Override
-                    public boolean isCellEditable(int row, int column) {
-                        return false;
-                    }
+                    public boolean isCellEditable(int row, int column) { return false; }
                 };
+                JTable postSummaryTable = new JTable(postSummaryTableModel);
+                postSummaryTable.setAutoCreateRowSorter(true);
+                JPanel summaryPanel = new JPanel(new BorderLayout());
+                summaryPanel.add(new JScrollPane(postSummaryTable), BorderLayout.CENTER);
 
-                JTable table = new JTable(tableModel);
+                // --- PESTAÑA 2: DETALLES FILTRADOS (Contenedor Dinámico) ---
+                detailsTabbedPane = new JTabbedPane(JTabbedPane.LEFT); // Pestañas laterales para mejor orden
 
-                table.setAutoCreateRowSorter(true);
+                mainTabbedPane.addTab("Resumen de Posts", summaryPanel);
+                mainTabbedPane.addTab("Detalles por Post", detailsTabbedPane);
+                frame.add(mainTabbedPane, BorderLayout.CENTER);
 
-                table.getColumnModel().getColumn(0).setPreferredWidth(110);
-                table.getColumnModel().getColumn(1).setPreferredWidth(70);
-                table.getColumnModel().getColumn(2).setPreferredWidth(90);
-                table.getColumnModel().getColumn(3).setPreferredWidth(90);
-                table.getColumnModel().getColumn(4).setPreferredWidth(70);
-                table.getColumnModel().getColumn(5).setPreferredWidth(500);
-
-                // area de logs
-                logArea = new JTextArea(6, 80);
+                // 3. Logs
+                logArea = new JTextArea(5, 80);
                 logArea.setEditable(false);
-
-                frame.add(countersPanel, BorderLayout.NORTH);
-                frame.add(new JScrollPane(table), BorderLayout.CENTER);
                 frame.add(new JScrollPane(logArea), BorderLayout.SOUTH);
 
-                frame.setSize(1000, 600);
+                frame.setSize(1200, 700);
                 frame.setLocationRelativeTo(null);
                 frame.setVisible(true);
             }
         });
     }
 
-    /**metodo para registrar el servicio en el DF**/
     private void registerVisualizationService() {
         DFAgentDescription dfd = new DFAgentDescription();
         dfd.setName(getAID());
-
         ServiceDescription sd = new ServiceDescription();
         sd.setType(SERVICE_TYPE);
         sd.setName(SERVICE_NAME);
         dfd.addServices(sd);
-
         try {
             DFService.register(this, dfd);
-            System.out.println("[" + getLocalName() + "] Servicio registrado en DF: " + SERVICE_TYPE);
         } catch (FIPAException e) {
-            System.err.println("[" + getLocalName() + "] No se pudo registrar el servicio en DF: " + e.getMessage());
+            System.err.println("Error registrando en DF: " + e.getMessage());
         }
     }
 
-    /**metodo para actualizar los contadores**/
-
-    private void updateCounters(String sentiment){
+    private void updateCounters(String postId, String sentiment){
         total++;
+        if ("POS".equalsIgnoreCase(sentiment)) pos++;
+        else if ("NEG".equalsIgnoreCase(sentiment)) neg++;
+        else if ("NEU".equalsIgnoreCase(sentiment)) neu++;
+        else error++;
 
-        if ("POS".equalsIgnoreCase(sentiment)) {
-            pos++;
+        if (postId != null && !postId.trim().isEmpty()) {
+            postMap.putIfAbsent(postId, new PostContainer(postId));
+            PostContainer container = postMap.get(postId);
 
-        } else if ("NEG".equalsIgnoreCase(sentiment)) {
-            neg++;
-
-        } else if ("NEU".equalsIgnoreCase(sentiment)) {
-            neu++;
-
-        } else {
-            error++;
+            container.totalComments++;
+            if ("POS".equalsIgnoreCase(sentiment)) container.posCount++;
+            else if ("NEG".equalsIgnoreCase(sentiment)) container.negCount++;
+            else if ("NEU".equalsIgnoreCase(sentiment)) container.neuCount++;
         }
     }
 
-    /**metodo para refrescar las etiquetas de contadores**/
     private void refreshCounters() {
         if (totalLabel != null)
             totalLabel.setText("Total: " + total);
@@ -179,20 +194,71 @@ public class VisualizationAgent extends Agent {
             errorLabel.setText("ERROR: " + error);
     }
 
-    /**metodo para actualizar la interfaz**/
     private void updateUi(final SentimentResult result) {
         SwingUtilities.invokeLater(new Runnable() {
             @Override
             public void run() {
-                if (tableModel != null) {
-                    tableModel.addRow(new Object[]{
-                            result.timestamp,
-                            result.postId,
-                            result.commentId,
-                            result.sentiment,
-                            String.format("%.4f", result.score),
-                            result.text
-                    });
+                PostContainer container = postMap.get(result.postId);
+                if (container == null) return;
+
+                // 1. Gestionar o Crear la pestaña de detalle específica de este Post
+                if (container.detailTableModel == null) {
+                    // Crear el modelo de tabla exclusivo para el post
+                    container.detailTableModel = new DefaultTableModel(
+                        new Object[]{"Hora", "Comentario ID", "Sentimiento", "Score", "Texto"},
+                        0
+                    ) {
+                        @Override
+                        public boolean isCellEditable(int row, int column) { return false; }
+                    };
+
+                    JTable postDetailTable = new JTable(container.detailTableModel);
+                    postDetailTable.setAutoCreateRowSorter(true);
+
+                    // Ajustar anchos
+                    postDetailTable.getColumnModel().getColumn(0).setPreferredWidth(90);
+                    postDetailTable.getColumnModel().getColumn(1).setPreferredWidth(100);
+                    postDetailTable.getColumnModel().getColumn(2).setPreferredWidth(90);
+                    postDetailTable.getColumnModel().getColumn(3).setPreferredWidth(70);
+                    postDetailTable.getColumnModel().getColumn(4).setPreferredWidth(500);
+
+                    // Añadir la tabla al contenedor de pestañas secundario
+                    JPanel panelPost = new JPanel(new BorderLayout());
+                    panelPost.add(new JScrollPane(postDetailTable), BorderLayout.CENTER);
+
+                    // Limitar el largo del título de la pestaña si el ID es muy largo
+                    String tabTitle = result.postId.length() > 20 ? result.postId.substring(0, 17) + "..." : result.postId;
+                    detailsTabbedPane.addTab(tabTitle, panelPost);
+                }
+
+                // 2. Insertar el comentario en la tabla de su respectivo Post
+                container.detailTableModel.addRow(new Object[]{
+                    result.timestamp,
+                    result.commentId,
+                    result.sentiment,
+                    String.format("%.4f", result.score),
+                    result.text
+                });
+
+                // 3. Actualizar la fila en la tabla de Resumen General
+                if (postSummaryTableModel != null) {
+                    Object[] rowSummary = new Object[]{
+                        container.postId,
+                        container.totalComments,
+                        container.posCount,
+                        container.negCount,
+                        container.neuCount
+                    };
+
+                    if (container.rowIndex == -1) {
+                        container.rowIndex = postSummaryTableModel.getRowCount();
+                        postSummaryTableModel.addRow(rowSummary);
+                    } else {
+                        postSummaryTableModel.setValueAt(container.totalComments, container.rowIndex, 1);
+                        postSummaryTableModel.setValueAt(container.posCount, container.rowIndex, 2);
+                        postSummaryTableModel.setValueAt(container.negCount, container.rowIndex, 3);
+                        postSummaryTableModel.setValueAt(container.neuCount, container.rowIndex, 4);
+                    }
                 }
 
                 refreshCounters();
@@ -207,12 +273,8 @@ public class VisualizationAgent extends Agent {
         });
     }
 
-    /**metodo para registrar mensajes mal formados**/
-
     private void registerMalformedMessage(final String content){
-        error++;
-        total++;
-
+        error++; total++;
         SwingUtilities.invokeLater(new Runnable() {
             @Override
             public void run() {
@@ -226,7 +288,6 @@ public class VisualizationAgent extends Agent {
         });
     }
 
-    /**metodo para procesar los mensajes**/
     private void processVisualizationMessage(ACLMessage message) {
         try {
             SentimentResult result = gson.fromJson(message.getContent(), SentimentResult.class);
@@ -240,20 +301,12 @@ public class VisualizationAgent extends Agent {
                 result.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
             }
 
-            updateCounters(result.sentiment);
+            updateCounters(result.postId, result.sentiment);
             updateUi(result);
-
-            System.out.println("[" + getLocalName() + "] Resultado visualizado: "
-                    + result.postId + "/" + result.commentId + " -> " + result.sentiment);
-
         } catch (Exception e) {
             registerMalformedMessage(message.getContent());
-            System.err.println("[" + getLocalName() + "] Error procesando mensaje de visualizacion: " + e.getMessage());
         }
     }
-
-
-
 
     @Override
     protected void setup() {
@@ -290,8 +343,6 @@ public class VisualizationAgent extends Agent {
             }
         });
     }
-
-
 
     @Override
     protected void takeDown() {

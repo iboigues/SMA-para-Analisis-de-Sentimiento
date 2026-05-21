@@ -1,5 +1,6 @@
 package sma_agents;
 
+import com.google.api.services.youtube.model.CommentThread;
 import jade.core.Agent;
 import jade.core.AID;
 import jade.core.Service;
@@ -7,6 +8,9 @@ import jade.core.behaviours.*;
 import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.lang.acl.ACLMessage;
 import jade.lang.acl.MessageTemplate;
+import youtube.YoutubeCommentsAPI;
+import youtube.YoutubeResponse;
+
 import jade.core.Agent;
 import jade.domain.FIPAException;
 import jade.domain.DFService;
@@ -147,29 +151,28 @@ public class AcquisitionAgent extends Agent{
                 }
 
                 // separamos cada parte del csv para tener el texto por un lado y generar un id unico
-                String[] parts = line.split(";", 3);
+                String[] parts = line.split(";", 2);
                 String postId = parts[0].trim();
-                String commentId = parts[1].trim();
-                String text = parts[2].trim();
+                String maxComments = parts[1].trim();
 
-                String uniqueCommentId = postId + "_" + commentId;
+                YoutubeResponse response = YoutubeCommentsAPI.getComments(postId, Integer.parseInt(maxComments));
 
-                // si no estaba el mensaje lo detecta para procesar y lo añade
-                if (!processedComments.contains(uniqueCommentId)){
-                    processedComments.add(uniqueCommentId);
-                    System.out.println("[" + getLocalName() + "] Nuevo comentario detectado:");
-                    System.out.println("    Publicacion: " + postId);
-                    System.out.println("    Comentario: " + commentId);
-                    System.out.println("    Texto: " + text);
+                for (CommentThread comment : response.comments()) {
+                    String commenter = comment.getSnippet().getTopLevelComment().getSnippet().getAuthorDisplayName();
+                    String commentText = comment.getSnippet().getTopLevelComment().getSnippet().getTextDisplay();
 
-                    // envío a sentimentAgent
-                    sendCommentToSentimentAgent(postId, commentId, text);
+                    String uniqueID = response.title() + "_" + commenter + "_" + commentText;
+
+                    if(processedComments.contains(uniqueID))
+                        continue;
+
+                    processedComments.add(uniqueID);
+                    sendCommentToSentimentAgent(response.title(),commenter,commentText);
                 }
-
             }
 
         } catch (IOException e) {
-        System.out.println("[" + getLocalName() + "] Error leyendo fichero: " + e.getMessage());
+            System.out.println("[" + getLocalName() + "] Error leyendo fichero: " + e.getMessage());
         }
     }
 
@@ -220,9 +223,9 @@ public class AcquisitionAgent extends Agent{
     /*********************************** Behaviours ***********************************/
 
 
-    TickerBehaviour checkBehaviour = new TickerBehaviour(this, 2000) {
+    OneShotBehaviour checkBehaviour = new OneShotBehaviour(this) {
         @Override
-        protected void onTick() {
+        public void action() {
             checkNewComments();
         }
     };
